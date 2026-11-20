@@ -1,4 +1,4 @@
 name = "Shared Storybook"
-version = "1"
+version = "1.1"
 description = "A book everyone writes together: add a line, a little sketch, or a choice for everyone to vote on, and the pages turn together, with each author's name in the margin. Dee's idea in PDA SEASIDE (November 2026), built by Claude; characters write on their own screens, and a person's line invites each of them to add theirs."
 source_code_url = "https://github.com/AETHER-ENGINEERS/storybook"
