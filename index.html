@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shared Storybook</title>
+<script src="webxdc.js"></script>
+<style>
+  :root { --bg:#17131d; --paper:#f6eedf; --ink:#2b2230; --margin:#9b7b5a; --accent:#7b4fb5; --muted:#8a7f90; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:#efe6f5; font:15px/1.5 system-ui, sans-serif; padding:14px; }
+  main { max-width:640px; margin:0 auto; }
+  h1 { font:600 20px Georgia, serif; margin:0 0 2px; }
+  .muted { color:var(--muted); }
+  .page { background:var(--paper); color:var(--ink); border-radius:6px 14px 14px 6px; padding:18px 18px 14px 0; margin:12px 0; min-height:220px;
+    box-shadow: inset 6px 0 0 #e3d6bf, 0 6px 22px rgba(0,0,0,.35); font:16px/1.6 Georgia, serif; }
+  .page h2 { font:italic 15px Georgia, serif; margin:0 0 10px 92px; color:var(--margin); }
+  .entry { display:grid; grid-template-columns:84px 1fr; gap:8px; margin:0 0 8px; }
+  .who { text-align:right; font:italic 12px/1.9 Georgia, serif; color:var(--margin); border-right:1px solid #d9c7a8; padding-right:8px; }
+  .entry svg { width:100%; max-width:320px; height:auto; background:#fffaf0; border-radius:6px; }
+  .choice { border:1px dashed #b89c74; border-radius:8px; padding:6px 10px; }
+  .choice .opt { display:flex; justify-content:space-between; gap:8px; }
+  .empty { margin-left:92px; color:#a99a86; font-style:italic; }
+  .card { background:#231d2b; border-radius:12px; padding:12px; margin:10px 0; display:grid; gap:8px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  input, textarea { background:#2f2739; color:#f1e9f7; border:1px solid #4a3f58; border-radius:8px; padding:8px 10px; font:inherit; }
+  textarea { width:100%; min-height:56px; resize:vertical; }
+  input { flex:1; min-width:120px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:8px 13px; font:600 14px system-ui; cursor:pointer; }
+  button.ghost { background:transparent; color:#cdb6ef; border:1px solid #6b5791; }
+  canvas { background:#fffaf0; border-radius:8px; touch-action:none; width:100%; max-width:320px; height:160px; }
+  nav { display:flex; justify-content:space-between; align-items:center; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">Shared Storybook</h1>
+  <div class="muted">Everyone adds a line, a sketch or a choice; the pages turn together. Each author's name is in the margin.</div>
+  <div id="app"></div>
+</main>
+<script>
+const me = webxdc.selfAddr, myName = webxdc.selfName;
+const B = { title: "", pages: [[]], seen: 0 }; // pages: [[entry]], the last one is where everyone writes
+let browsing = null; // a page this copy is looking back at (just here)
+let sketching = false, strokes = [], stroke = null;
+const isAI = (a) => /^ai:/.test(a || "");
+
+function apply(p) {
+  if (!p || typeof p !== "object") return;
+  const page = B.pages[B.pages.length - 1];
+  if (p.type === "title") B.title = String(p.title || "").slice(0, 80);
+  else if (p.type === "line") { const t = String(p.text || "").trim().slice(0, 600); if (t) page.push({ kind: "line", by: p.name || p.from, from: p.from, text: t }); }
+  else if (p.type === "sketch") { if (Array.isArray(p.strokes)) page.push({ kind: "sketch", by: p.name || p.from, from: p.from, strokes: p.strokes.slice(0, 60) }); }
+  else if (p.type === "choice") {
+    const opts = (p.options || []).map((o) => String(o).trim().slice(0, 120)).filter(Boolean).slice(0, 4);
+    if (opts.length >= 2) page.push({ kind: "choice", id: p.id, by: p.name || p.from, from: p.from, prompt: String(p.prompt || "What happens next?").slice(0, 160), options: opts, votes: {} });
+  } else if (p.type === "vote") {
+    for (const pg of B.pages) for (const e of pg) if (e.kind === "choice" && e.id === p.id && p.option >= 0 && p.option < e.options.length) e.votes[p.from] = p.option;
+  } else if (p.type === "turn") {
+    if (p.page === B.pages.length && page.length) { B.pages.push([]); browsing = null; }
+  }
+}
+
+// ---------- drawing a page ----------
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+function sketchSvg(strokes) {
+  const paths = strokes.map((s) => `<polyline fill="none" stroke="#3b2f40" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" points="${s.map((p) => p.join(",")).join(" ")}"/>`).join("");
+  return `<svg viewBox="0 0 320 160" role="img" aria-label="a sketch">${paths}</svg>`;
+}
+function tally(e) { const n = e.options.map(() => 0); Object.values(e.votes).forEach((v) => n[v]++); return n; }
+function entryHtml(e) {
+  let body;
+  if (e.kind === "line") body = esc(e.text);
+  else if (e.kind === "sketch") body = sketchSvg(e.strokes);
+  else {
+    const n = tally(e), mine = e.votes[me];
+    body = `<div class="choice"><div><i>${esc(e.prompt)}</i></div>${e.options.map((o, i) =>
+      `<div class="opt"><span>${String.fromCharCode(65 + i)}. ${esc(o)} — ${n[i]} vote${n[i] === 1 ? "" : "s"}${mine === i ? " (yours)" : ""}</span>
+       <button class="ghost" data-vote="${esc(e.id)}:${i}" aria-label="Vote ${String.fromCharCode(65 + i)}: ${esc(o)}">Vote ${String.fromCharCode(65 + i)}</button></div>`).join("")}</div>`;
+  }
+  return `<div class="entry"><div class="who">${esc(e.by)}</div><div>${body}</div></div>`;
+}
+const DRAFTS = ["line", "prompt", "optA", "optB", "bookTitle"];
+function render() {
+  // (what you're halfway through typing survives someone else's line arriving)
+  const kept = {}; let focus = document.activeElement && document.activeElement.id;
+  DRAFTS.forEach((id) => { const el = document.getElementById(id); if (el) kept[id] = el.value; });
+  draw();
+  DRAFTS.forEach((id) => { const el = document.getElementById(id); if (el && kept[id]) el.value = kept[id]; });
+  if (focus && document.getElementById(focus)) document.getElementById(focus).focus();
+}
+function draw() {
+  document.getElementById("title").textContent = B.title || "Shared Storybook";
+  const now = B.pages.length - 1, at = browsing ?? now, page = B.pages[at];
+  let h = `<div class="page"><h2>${B.title ? esc(B.title) + " · " : ""}page ${at + 1} of ${B.pages.length}${at < now ? " (an earlier page)" : ""}</h2>
+    ${page.length ? page.map(entryHtml).join("") : '<div class="empty">A blank page. Who starts?</div>'}</div>
+    <nav><button class="ghost" id="prev" ${at === 0 ? "disabled" : ""}>Earlier page</button>
+      <span class="muted">${page.length} on this page</span>
+      <button class="ghost" id="next" ${at === now ? "disabled" : ""}>Later page</button></nav>`;
+  if (at === now) {
+    h += `<div class="card"><label for="line">Your line</label><textarea id="line" aria-label="Your line" placeholder="And then…"></textarea>
+      <div class="row"><button id="add">Add line</button><button class="ghost" id="sketch">${sketching ? "Cancel sketch" : "Sketch something"}</button>
+      <button class="ghost" id="turn" ${page.length ? "" : "disabled"}>Turn the page</button></div>
+      ${sketching ? `<canvas id="pad" width="320" height="160" aria-label="Sketch pad"></canvas><div class="row"><button id="addSketch">Add sketch</button><button class="ghost" id="clearSketch">Clear</button></div>` : ""}</div>
+      <div class="card"><b>Offer a choice</b> <span class="muted">(everyone votes on what happens next)</span>
+      <input id="prompt" aria-label="Choice question" placeholder="What happens next?">
+      <div class="row"><input id="optA" aria-label="Choice A" placeholder="Choice A"><input id="optB" aria-label="Choice B" placeholder="Choice B"></div>
+      <div class="row"><button id="offer">Offer the choice</button></div></div>`;
+    if (!B.title) h += `<div class="card"><div class="row"><input id="bookTitle" aria-label="Book title" placeholder="Name the book"><button id="setTitle">Name it</button></div></div>`;
+  }
+  document.getElementById("app").innerHTML = h;
+  const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+  on("prev", () => { browsing = Math.max(0, at - 1); render(); });
+  on("next", () => { browsing = at + 1 >= now ? null : at + 1; render(); });
+  on("add", addLine);
+  on("turn", () => send({ type: "turn", page: B.pages.length }, `${myName} turned the page`));
+  on("sketch", () => { sketching = !sketching; strokes = []; render(); });
+  on("addSketch", () => { if (strokes.length) send({ type: "sketch", strokes }, `${myName} added a sketch`); sketching = false; strokes = []; render(); });
+  on("clearSketch", () => { strokes = []; drawPad(); });
+  on("offer", offer);
+  on("setTitle", () => { const t = document.getElementById("bookTitle").value.trim(); if (t) send({ type: "title", title: t }, `The book is called ${t}`); });
+  document.querySelectorAll("[data-vote]").forEach((b) => (b.onclick = () => { const [id, i] = b.getAttribute("data-vote").split(":"); send({ type: "vote", id, option: Number(i) }, ""); }));
+  const line = document.getElementById("line");
+  if (line) line.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addLine(); } };
+  if (sketching) setupPad();
+}
+function addLine() {
+  const el = document.getElementById("line");
+  const text = String(el ? el.value : "").trim();
+  if (!text) return console.warn("[storybook] rejected line: write something first");
+  el.value = "";
+  send({ type: "line", text }, `${myName}: ${text.slice(0, 80)}`);
+}
+function offer() {
+  const prompt = document.getElementById("prompt").value.trim() || "What happens next?";
+  const options = [document.getElementById("optA").value, document.getElementById("optB").value].map((s) => s.trim()).filter(Boolean);
+  if (options.length < 2) return console.warn("[storybook] rejected choice: give two choices, A and B");
+  ["prompt", "optA", "optB"].forEach((id) => (document.getElementById(id).value = ""));
+  send({ type: "choice", id: "c" + Date.now().toString(36), prompt, options }, `${myName} asks: ${prompt}`);
+}
+// a person's line asks everyone to add theirs; a character's doesn't (so characters don't keep waking each other)
+function send(payload, info) {
+  const full = { ...payload, from: me, name: myName };
+  webxdc.sendUpdate({ payload: full, ...(info ? { info } : {}), ...(payload.type === "line" || payload.type === "choice" || payload.type === "turn" ? (isAI(me) ? {} : { notify: { "*": info || "The story goes on" } }) : {}) }, "");
+}
+
+// ---------- the sketch pad ----------
+function drawPad() {
+  const c = document.getElementById("pad"); if (!c) return;
+  const x = c.getContext("2d"); x.clearRect(0, 0, 320, 160); x.lineWidth = 2.5; x.lineCap = "round"; x.strokeStyle = "#3b2f40";
+  for (const s of strokes.concat(stroke ? [stroke] : [])) { x.beginPath(); s.forEach(([px, py], i) => (i ? x.lineTo(px, py) : x.moveTo(px, py))); x.stroke(); }
+}
+function setupPad() {
+  const c = document.getElementById("pad");
+  const pt = (e) => { const r = c.getBoundingClientRect(); return [Math.round((e.clientX - r.left) * 320 / r.width), Math.round((e.clientY - r.top) * 160 / r.height)]; };
+  c.onpointerdown = (e) => { stroke = [pt(e)]; c.setPointerCapture(e.pointerId); };
+  c.onpointermove = (e) => { if (stroke && stroke.length < 400) { stroke.push(pt(e)); drawPad(); } };
+  c.onpointerup = () => { if (stroke && stroke.length > 1 && strokes.length < 60) strokes.push(stroke); stroke = null; drawPad(); };
+  drawPad();
+}
+
+let ready = false;
+webxdc.setUpdateListener((u) => { apply(u.payload); if (ready || u.serial === u.max_serial) { ready = true; render(); } }, 0).then(() => { ready = true; render(); });
+render();
+</script>
+</body>
+</html>
